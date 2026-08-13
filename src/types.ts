@@ -1,0 +1,47 @@
+export interface FreeModel {
+  model_name: string;
+  provider: string;
+  base_url: string;
+  free_type: 'monthly' | 'trial' | 'unlimited';
+  free_quota: string;
+  rate_limit: string;
+  refresh_cycle: 'monthly' | 'daily' | 'none';
+  expire_days: number | null;
+  context_length: number | null;
+  capabilities: string[];
+  source_url: string;
+  region?: string;
+  detected_at: string;
+  status: 'active' | 'inactive';
+}
+
+export interface DiffResult {
+  added: FreeModel[];
+  removed: FreeModel[];
+  changed: FreeModel[];
+}
+
+export interface ProviderScraper {
+  name: string;
+  scrape(apiKey?: string): Promise<FreeModel[]>;
+}
+
+export interface ApiKeys {
+  OPENROUTER_API_KEY?: string;
+  ZHIPU_API_KEY?: string;
+  MODELSCOPE_API_KEY?: string;
+  GOOGLE_API_KEY?: string;
+  NVIDIA_API_KEY?: string;
+  SILICONFLOW_API_KEY?: string;
+  AGNES_API_KEY?: string;
+}
+
+export interface RunSummary {
+  ran_at: string;
+  providers_scraped: string[];
+  provider_errors: Record<string, string>;
+  total_scraped: number;
+  added: number;
+  removed: number;
+  changed: number;
+}

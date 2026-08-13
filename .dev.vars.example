@@ -1,0 +1,9 @@
+# Copy to .dev.vars for `npm run dev` local testing.
+# Values here are only used by wrangler dev (never deployed).
+NOTIFY_WEBHOOK=
+SYNC_SECRET=
+OPENROUTER_API_KEY=
+ZHIPU_API_KEY=
+MODELSCOPE_API_KEY=
+GOOGLE_API_KEY=
+NVIDIA_API_KEY=

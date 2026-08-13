@@ -1,0 +1,24 @@
+{
+  "name": "modelradar",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Free AI model auto-discovery and relay-station sync (Cloudflare Workers / GitHub Actions)",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "sync:local": "node dist/standalone/run.js",
+    "test": "node --test \"dist/src/tests/*.test.js\""
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260804.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0",
+    "wrangler": "^4.0.0"
+  }
+}

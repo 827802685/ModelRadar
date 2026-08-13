@@ -1,0 +1,14 @@
+name = "modelradar"
+main = "src/index.ts"
+compatibility_date = "2025-08-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+[[d1_databases]]
+binding = "DB"
+database_name = "modelradar-db"
+database_id = "4136edab-68d2-4fd4-b6a5-ec80202ebd6b"
+migrations_dir = "migrations"
+
+[triggers]
+crons = ["0 0 * * *"]
