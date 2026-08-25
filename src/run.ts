@@ -34,29 +34,7 @@ async function validateModel(model: FreeModel, ai: WorkersAiLike): Promise<boole
   }
 }
 
-/**
- * Validate that a model is actually usable by performing a lightweight inference test.
- * This consumes a tiny amount of AI quota but ensures the model is not just listed but functional.
- */
-async function validateModel(model: FreeModel, ai: WorkersAiLike): Promise<boolean> {
-  if (!ai) return true; // If no AI binding, skip validation (assume scraper is correct)
-  
-  try {
-    // Use a very simple prompt to minimize token usage
-    const prompt = "Hello";
-    const result = await ai.run(model.model_name, {
-      messages: [{ role: 'user', content: prompt }],
-      max_tokens: 1, // Just generate one token to verify the model works
-    });
-    
-    // If we get any response back (even empty), the model is functional
-    return result !== null && result !== undefined;
-  } catch (err) {
-    // If validation fails, log but don't fail the whole sync
-    console.warn(`[Model Validation] Model ${model.provider}:${model.model_name} failed validation:`, err);
-    return false;
-  }
-}
+
 
 export interface SyncOptions {
   store: Store;
@@ -144,7 +122,7 @@ export async function runSync(opts: SyncOptions): Promise<RunSummary> {
      // Validate each new model in parallel (but limit concurrency to avoid rate limits)
      const validationResults = await Promise.all(
        modelsToValidate.map(async (model) => {
-         const isValid = await validateModel(model, opts.ai);
+         const isValid = await validateModel(model, opts.ai!);
          return { model, isValid };
        })
      );
@@ -183,7 +161,7 @@ export async function runSync(opts: SyncOptions): Promise<RunSummary> {
     ran_at: new Date().toISOString(),
     providers_scraped: liveProviders,
     provider_errors: providerErrors,
-    total_scraped: allModels.length,
+    total_scraped: validatedAllModels.length,
     added: diff.added.length,
     removed: diff.removed.length,
     changed: diff.changed.length,
