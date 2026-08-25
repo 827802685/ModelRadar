@@ -49,6 +49,7 @@ function hasChanged(old: FreeModel, next: FreeModel): boolean {
     'expire_days',
     'context_length',
     'base_url',
+    'categories',
   ];
   const same = (a: unknown, b: unknown) =>
     Array.isArray(a) && Array.isArray(b)

@@ -1,4 +1,5 @@
 import type { FreeModel } from './types.js';
+import { CATEGORY_LABELS } from './classify.js';
 
 /**
  * Relay-station friendly catalog export (OpenAI-compatible "channels" ingest).
@@ -17,6 +18,10 @@ export function toRelayCatalog(models: FreeModel[]) {
     expire_days: m.expire_days,
     context_length: m.context_length,
     capabilities: m.capabilities,
+    categories: m.categories ?? [],
+    category_labels: (m.categories ?? []).map(
+      (c) => CATEGORY_LABELS[c as keyof typeof CATEGORY_LABELS] ?? c
+    ),
     source_url: m.source_url,
     region: m.region ?? null,
   }));

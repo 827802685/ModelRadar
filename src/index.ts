@@ -1,12 +1,15 @@
 import { runSync } from './run.js';
-import { D1Store } from './store.js';
+import { D1Store, type Store } from './store.js';
 import { toRelayCatalog } from './catalog.js';
 import { dashboardHtml, loginHtml } from './dashboard.js';
 import { toRssXml } from './rss.js';
+import type { WorkersAiLike } from './classify.js';
 import type { SyncOptions } from './run.js';
+import type { RunSummary } from './types.js';
 
 export interface Env {
   DB: D1Database;
+  AI?: WorkersAiLike;
   NOTIFY_WEBHOOK?: string;
   SYNC_SECRET?: string;
   ADMIN_PASSWORD?: string;
@@ -50,6 +53,7 @@ function syncOptions(env: Env): SyncOptions {
     store: new D1Store(env.DB),
     webhookUrl: env.NOTIFY_WEBHOOK,
     retentionDays: Number(env.RETENTION_DAYS || '60') || 60,
+    ai: env.AI,
     apiKeys: {
       OPENROUTER_API_KEY: env.OPENROUTER_API_KEY,
       ZHIPU_API_KEY: env.ZHIPU_API_KEY,
@@ -145,6 +149,61 @@ async function handleLogin(request: Request, env: Env): Promise<Response> {
   return html(loginHtml());
 }
 
+const MODEL_CAP = 30;
+
+function fmtModels(names: string[]): string {
+  if (names.length === 0) return '无';
+  const shown = names.slice(0, MODEL_CAP).join(', ');
+  return names.length > MODEL_CAP ? `${shown} … 等 ${names.length} 个` : shown;
+}
+
+async function setModelsOffline(
+  store: Store,
+  items: { provider: string; model_name: string }[],
+  offline: boolean
+): Promise<number> {
+  await store.setAdminOfflineMany(items, offline);
+  const now = new Date().toISOString();
+  const names = items.map((it) => `${it.provider}:${it.model_name}`);
+  if (items.length === 1 && items[0]) {
+    await store.addLog({
+      ts: now,
+      action: offline ? 'offline' : 'online',
+      provider: items[0].provider,
+      model_name: items[0].model_name,
+      detail: offline ? '手动下线' : '手动恢复',
+    });
+  } else if (items.length > 1) {
+    await store.addLog({
+      ts: now,
+      action: offline ? 'batch_offline' : 'batch_online',
+      detail: `${offline ? '批量下线' : '批量恢复'} ${items.length} 个模型: ${fmtModels(names)}`,
+    });
+  }
+  return items.length;
+}
+
+async function logSyncRun(store: Store, action: string, summary: RunSummary): Promise<void> {
+  const parts: string[] = [];
+  if ((summary.added_models ?? []).length > 0) {
+    parts.push(`新增(${summary.added}): ${fmtModels(summary.added_models!)}`);
+  }
+  if ((summary.removed_models ?? []).length > 0) {
+    parts.push(`下线(${summary.removed}): ${fmtModels(summary.removed_models!)}`);
+  }
+  if ((summary.changed_models ?? []).length > 0) {
+    parts.push(`变更(${summary.changed}): ${fmtModels(summary.changed_models!)}`);
+  }
+  await store.addLog({
+    ts: new Date().toISOString(),
+    action,
+    detail:
+      parts.length > 0
+        ? `抓取 ${summary.total_scraped} 个模型; ${parts.join('; ')}`
+        : `抓取 ${summary.total_scraped} 个模型, 无变化`,
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -189,7 +248,56 @@ export default {
     }
 
     if (url.pathname === '/models' && request.method === 'GET') {
-      return json(await new D1Store(env.DB).getExisting());
+      return json(await new D1Store(env.DB).getAll());
+    }
+
+    if (url.pathname === '/models/offline' && request.method === 'POST') {
+      if (!(await isAuthed(request, env))) return json({ error: 'unauthorized' }, 401);
+      const body = (await request.json()) as { provider?: string; model_name?: string };
+      if (!body.provider || !body.model_name) {
+        return json({ error: 'provider and model_name required' }, 400);
+      }
+      await setModelsOffline(
+        new D1Store(env.DB),
+        [{ provider: body.provider, model_name: body.model_name }],
+        true
+      );
+      return json({ ok: true });
+    }
+
+    if (url.pathname === '/models/online' && request.method === 'POST') {
+      if (!(await isAuthed(request, env))) return json({ error: 'unauthorized' }, 401);
+      const body = (await request.json()) as { provider?: string; model_name?: string };
+      if (!body.provider || !body.model_name) {
+        return json({ error: 'provider and model_name required' }, 400);
+      }
+      await setModelsOffline(
+        new D1Store(env.DB),
+        [{ provider: body.provider, model_name: body.model_name }],
+        false
+      );
+      return json({ ok: true });
+    }
+
+    if (url.pathname === '/models/batch' && request.method === 'POST') {
+      if (!(await isAuthed(request, env))) return json({ error: 'unauthorized' }, 401);
+      const body = (await request.json()) as {
+        offline?: boolean;
+        items?: { provider?: string; model_name?: string }[];
+      };
+      const items = (body.items ?? []).filter(
+        (it) => it.provider && it.model_name
+      ) as { provider: string; model_name: string }[];
+      if (items.length === 0) {
+        return json({ error: 'items required' }, 400);
+      }
+      const count = await setModelsOffline(new D1Store(env.DB), items, body.offline === true);
+      return json({ ok: true, count });
+    }
+
+    if (url.pathname === '/logs' && request.method === 'GET') {
+      if (!(await isAuthed(request, env))) return json({ error: 'unauthorized' }, 401);
+      return json(await new D1Store(env.DB).getLogs(200));
     }
 
     if (url.pathname === '/catalog' && request.method === 'GET') {
@@ -204,6 +312,7 @@ export default {
       const sessionOk = await isAuthed(request, env);
       if (!keyOk && !sessionOk) return json({ error: 'unauthorized' }, 401);
       const summary = await runSync(syncOptions(env));
+      await logSyncRun(new D1Store(env.DB), 'sync', summary);
       return json(summary);
     }
 
@@ -214,6 +323,11 @@ export default {
   },
 
   async scheduled(_event: ScheduledEvent, env: Env): Promise<void> {
-    await runSync(syncOptions(env));
+    const summary = await runSync(syncOptions(env));
+    try {
+      await logSyncRun(new D1Store(env.DB), 'sync_cron', summary);
+    } catch (err) {
+      console.error('[log] failed:', err);
+    }
   },
 };

@@ -3,6 +3,7 @@ import type { ProviderScraper, ApiKeys, RunSummary, DiffResult } from './types.j
 import type { Store } from './store.js';
 import { diffModels } from './diff.js';
 import { sendNotification } from './notify.js';
+import { classifyAll, type WorkersAiLike } from './classify.js';
 import { OpenRouterScraper } from './providers/openrouter.js';
 import { ZhipuScraper } from './providers/zhipu.js';
 import { ModelScopeScraper } from './providers/modelscope.js';
@@ -18,6 +19,8 @@ export interface SyncOptions {
   webhookUrl?: string;
   scrapers?: ProviderScraper[];
   retentionDays?: number;
+  /** Optional Workers AI binding used to refine model classification. */
+  ai?: WorkersAiLike;
 }
 
 const DEFAULT_SCRAPERS = [
@@ -52,7 +55,7 @@ export async function runSync(opts: SyncOptions): Promise<RunSummary> {
     new SiliconFlowScraper(),
   ];
 
-  const allModels: FreeModel[] = [];
+  const scrapedModels: FreeModel[] = [];
   const providerErrors: Record<string, string> = {};
   const liveProviders: string[] = [];
 
@@ -70,7 +73,7 @@ export async function runSync(opts: SyncOptions): Promise<RunSummary> {
 
   for (const result of results) {
     if (result.ok) {
-      allModels.push(...result.models);
+      scrapedModels.push(...result.models);
       liveProviders.push(result.scraper.name);
       console.log(`[${result.scraper.name}] scraped ${result.models.length} free models`);
     } else {
@@ -81,10 +84,16 @@ export async function runSync(opts: SyncOptions): Promise<RunSummary> {
   }
 
   const existing = await store.getExisting();
+
+  const allModels = await classifyAll(scrapedModels, opts.ai);
   const diff: DiffResult = diffModels(existing, allModels, liveProviders);
 
-  if (diff.added.length > 0) await store.upsert(diff.added);
-  if (diff.changed.length > 0) await store.upsert(diff.changed);
+  const adminOffline = await store.getAdminOfflineKeys();
+  const notOverridden = (m: FreeModel) =>
+    !adminOffline.has(`${m.provider}:${m.model_name}`);
+
+  if (diff.added.length > 0) await store.upsert(diff.added.filter(notOverridden));
+  if (diff.changed.length > 0) await store.upsert(diff.changed.filter(notOverridden));
   if (diff.removed.length > 0) await store.markRemoved(diff.removed);
 
   const retentionDays = opts.retentionDays ?? 60;
@@ -98,6 +107,9 @@ export async function runSync(opts: SyncOptions): Promise<RunSummary> {
     added: diff.added.length,
     removed: diff.removed.length,
     changed: diff.changed.length,
+    added_models: diff.added.map((m) => `${m.provider}:${m.model_name}`),
+    removed_models: diff.removed.map((m) => `${m.provider}:${m.model_name}`),
+    changed_models: diff.changed.map((m) => `${m.provider}:${m.model_name}`),
   };
 
   if (diff.added.length + diff.removed.length + diff.changed.length > 0) {

@@ -15,6 +15,7 @@ function m(provider: string, modelName: string, overrides: Partial<FreeModel> = 
     expire_days: null,
     context_length: null,
     capabilities: ['chat'],
+    categories: ['chat'],
     source_url: 'https://example.com',
     detected_at: '2026-08-01T00:00:00Z',
     status: 'active',
@@ -47,4 +48,12 @@ test('same catalog yields empty diff', () => {
   assert.deepEqual(diff.added, []);
   assert.deepEqual(diff.removed, []);
   assert.deepEqual(diff.changed, []);
+});
+
+test('category change counts as a change', () => {
+  const existing = [m('p', 'a', { categories: ['chat'] })];
+  const incoming = [m('p', 'a', { categories: ['chat', 'code'] })];
+  const diff = diffModels(existing, incoming, ['p']);
+  assert.deepEqual(diff.changed.map((x) => x.model_name), ['a']);
+  assert.deepEqual(diff.added, []);
 });

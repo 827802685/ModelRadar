@@ -1,18 +1,24 @@
-import type { FreeModel, RunSummary } from './types.js';
+import type { FreeModel, RunSummary, AdminLog } from './types.js';
 
 export interface Store {
   getExisting(): Promise<FreeModel[]>;
+  getAll(): Promise<FreeModel[]>;
   upsert(models: FreeModel[]): Promise<void>;
   markRemoved(models: FreeModel[]): Promise<void>;
   recordRun?(summary: RunSummary): Promise<void>;
   pruneOld?(days: number): Promise<void>;
+  getAdminOfflineKeys(): Promise<Set<string>>;
+  setAdminOffline(provider: string, modelName: string, offline: boolean): Promise<void>;
+  setAdminOfflineMany(items: { provider: string; model_name: string }[], offline: boolean): Promise<void>;
+  addLog(entry: AdminLog): Promise<void>;
+  getLogs(limit?: number): Promise<AdminLog[]>;
 }
 
 const COLUMNS = `model_name, provider, base_url, free_type, free_quota,
 rate_limit, refresh_cycle, expire_days, context_length, capabilities,
-source_url, region, detected_at, status`;
+categories, source_url, region, detected_at, status`;
 
-const PLACEHOLDERS = `?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`;
+const PLACEHOLDERS = `?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?`;
 
 export class D1Store implements Store {
   constructor(private db: D1Database) {}
@@ -23,6 +29,79 @@ export class D1Store implements Store {
       .bind('active')
       .all();
     return (result.results ?? []).map(parseRow);
+  }
+
+  async getAll(): Promise<FreeModel[]> {
+    const result = await this.db
+      .prepare(`SELECT * FROM models ORDER BY status, provider, model_name`)
+      .all();
+    return (result.results ?? []).map(parseRow);
+  }
+
+  async getAdminOfflineKeys(): Promise<Set<string>> {
+    const result = await this.db
+      .prepare(`SELECT provider, model_name FROM models WHERE admin_offline = 1`)
+      .all();
+    return new Set(
+      (result.results ?? []).map(
+        (r) => `${String(r.provider)}:${String(r.model_name)}`
+      )
+    );
+  }
+
+  async setAdminOffline(provider: string, modelName: string, offline: boolean): Promise<void> {
+    await this.db
+      .prepare(
+        `UPDATE models SET admin_offline = ?, status = ?
+         WHERE provider = ? AND model_name = ?`
+      )
+      .bind(offline ? 1 : 0, offline ? 'inactive' : 'active', provider, modelName)
+      .run();
+  }
+
+  async setAdminOfflineMany(items: { provider: string; model_name: string }[], offline: boolean): Promise<void> {
+    if (items.length === 0) return;
+    const batch = items.map((it) =>
+      this.db
+        .prepare(
+          `UPDATE models SET admin_offline = ?, status = ?
+           WHERE provider = ? AND model_name = ?`
+        )
+        .bind(offline ? 1 : 0, offline ? 'inactive' : 'active', it.provider, it.model_name)
+    );
+    await this.db.batch(batch);
+  }
+
+  async addLog(entry: AdminLog): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO admin_log (ts, action, provider, model_name, detail)
+         VALUES (?, ?, ?, ?, ?)`
+      )
+      .bind(
+        entry.ts,
+        entry.action,
+        entry.provider ?? null,
+        entry.model_name ?? null,
+        entry.detail ?? ''
+      )
+      .run();
+  }
+
+  async getLogs(limit = 200): Promise<AdminLog[]> {
+    const result = await this.db
+      .prepare(`SELECT * FROM admin_log ORDER BY id DESC LIMIT ?`)
+      .bind(limit)
+      .all();
+    return (result.results ?? []).map((r) => ({
+      id: Number(r.id),
+      ts: String(r.ts),
+      action: String(r.action),
+      provider: r.provider === null || r.provider === undefined ? undefined : String(r.provider),
+      model_name:
+        r.model_name === null || r.model_name === undefined ? undefined : String(r.model_name),
+      detail: String(r.detail ?? ''),
+    }));
   }
 
   async upsert(models: FreeModel[]): Promise<void> {
@@ -39,6 +118,7 @@ export class D1Store implements Store {
          expire_days = excluded.expire_days,
          context_length = excluded.context_length,
          capabilities = excluded.capabilities,
+         categories = excluded.categories,
          source_url = excluded.source_url,
          region = excluded.region,
          detected_at = excluded.detected_at,
@@ -131,6 +211,7 @@ function bindRow(m: FreeModel): unknown[] {
     m.expire_days,
     m.context_length,
     JSON.stringify(m.capabilities),
+    JSON.stringify(m.categories ?? []),
     m.source_url,
     m.region ?? null,
     m.detected_at,
@@ -157,9 +238,14 @@ function parseRow(row: Record<string, unknown>): FreeModel {
       typeof row.capabilities === 'string'
         ? (JSON.parse(row.capabilities || '[]') as string[])
         : (row.capabilities as string[]) ?? [],
+    categories:
+      typeof row.categories === 'string'
+        ? (JSON.parse(row.categories || '[]') as string[])
+        : (row.categories as string[]) ?? [],
     source_url: String(row.source_url),
     region: row.region === null ? undefined : String(row.region),
     detected_at: String(row.detected_at),
     status: row.status as FreeModel['status'],
+    admin_offline: Number(row.admin_offline ?? 0) === 1,
   };
 }

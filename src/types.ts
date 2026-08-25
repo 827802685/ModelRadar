@@ -9,10 +9,12 @@ export interface FreeModel {
   expire_days: number | null;
   context_length: number | null;
   capabilities: string[];
+  categories?: string[];
   source_url: string;
   region?: string;
   detected_at: string;
   status: 'active' | 'inactive';
+  admin_offline?: boolean;
 }
 
 export interface DiffResult {
@@ -44,4 +46,16 @@ export interface RunSummary {
   added: number;
   removed: number;
   changed: number;
+  added_models?: string[];
+  removed_models?: string[];
+  changed_models?: string[];
+}
+
+export interface AdminLog {
+  id?: number;
+  ts: string;
+  action: string;
+  provider?: string;
+  model_name?: string;
+  detail?: string;
 }

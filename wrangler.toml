@@ -10,5 +10,11 @@ database_name = "modelradar-db"
 database_id = "4136edab-68d2-4fd4-b6a5-ec80202ebd6b"
 migrations_dir = "migrations"
 
+# Optional: Workers AI binding used to refine model classification with an LLM.
+# Classification works with built-in rules even without this binding. Uncomment
+# only when your Cloudflare account has Workers AI enabled:
+# [ai]
+# binding = "AI"
+
 [triggers]
 crons = ["0 0 * * *"]

@@ -1,4 +1,5 @@
 import type { FreeModel } from './types.js';
+import { CATEGORY_LABELS, CATEGORY_ORDER } from './classify.js';
 
 /** RFC-2822 date as required by RSS <pubDate>. */
 function rfc2822(iso: string): string {
@@ -28,9 +29,13 @@ export function toRssXml(models: FreeModel[], selfUrl: string): string {
       const caps = (m.capabilities ?? []).join(', ');
       const ctx = m.context_length ? m.context_length.toLocaleString() : '未知';
       const region = m.region ? `地区: ${m.region}; ` : '';
+      const cats = (m.categories ?? [])
+        .map((c) => CATEGORY_LABELS[c as keyof typeof CATEGORY_LABELS] ?? c)
+        .join(', ');
       const description = [
         `厂商: ${m.provider}`,
         `Base URL: ${m.base_url}`,
+        cats ? `分类: ${cats}` : '',
         `免费类型: ${m.free_type}`,
         `额度: ${m.free_quota}`,
         `限速: ${m.rate_limit}`,
@@ -41,12 +46,18 @@ export function toRssXml(models: FreeModel[], selfUrl: string): string {
         .filter(Boolean)
         .join(' | ');
 
+      const categoryTags = (m.categories ?? [])
+        .filter((c) => CATEGORY_ORDER.includes(c as (typeof CATEGORY_ORDER)[number]))
+        .map((c) => `    <category>${xmlEsc(CATEGORY_LABELS[c as keyof typeof CATEGORY_LABELS] ?? c)}</category>`)
+        .join('\n');
+
       return [
         '  <item>',
         `    <title>${xmlEsc(`${m.provider}/${m.model_name}`)}</title>`,
         `    <link>${xmlEsc(m.source_url)}</link>`,
         `    <guid isPermaLink="false">${xmlEsc(`${m.provider}:${m.model_name}`)}</guid>`,
         `    <pubDate>${rfc2822(m.detected_at)}</pubDate>`,
+        categoryTags,
         `    <description>${xmlEsc(description)}</description>`,
         '  </item>',
       ].join('\n');
