@@ -70,7 +70,7 @@ export function toRssXml(models: FreeModel[], selfUrl: string): string {
     '  <channel>',
     `    <title>ModelRadar 免费 AI 模型</title>`,
     `    <link>${xmlEsc(selfUrl)}</link>`,
-    `    <description>免费 AI 模型自动发现与同步 - 当前 ${models.filter((m) => m.status === 'active').length} 个活跃免费模型</description>`,
+    `    <description>免费 AI 模型自动发现与同步 - 当前 ${models.filter((m) => m.status === 'active').length} 个实测可用免费模型</description>`,
     `    <lastBuildDate>${now}</lastBuildDate>`,
     `    <pubDate>${now}</pubDate>`,
     `    <ttl>720</ttl>`,

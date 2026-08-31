@@ -1,4 +1,4 @@
-import type { FreeModel, RunSummary, AdminLog } from './types.js';
+import type { FreeModel, RunSummary, AdminLog, ModelTestRow } from './types.js';
 
 export interface Store {
   getExisting(): Promise<FreeModel[]>;
@@ -10,8 +10,13 @@ export interface Store {
   getAdminOfflineKeys(): Promise<Set<string>>;
   setAdminOffline(provider: string, modelName: string, offline: boolean): Promise<void>;
   setAdminOfflineMany(items: { provider: string; model_name: string }[], offline: boolean): Promise<void>;
+  getApiKeys(): Promise<Record<string, string>>;
+  setApiKey(provider: string, apiKey: string): Promise<void>;
+  deleteApiKey(provider: string): Promise<void>;
   addLog(entry: AdminLog): Promise<void>;
   getLogs(limit?: number): Promise<AdminLog[]>;
+  saveModelTest?(row: ModelTestRow): Promise<void>;
+  getModelTests?(): Promise<ModelTestRow[]>;
 }
 
 const COLUMNS = `model_name, provider, base_url, free_type, free_quota,
@@ -47,6 +52,27 @@ export class D1Store implements Store {
         (r) => `${String(r.provider)}:${String(r.model_name)}`
       )
     );
+  }
+
+  async getApiKeys(): Promise<Record<string, string>> {
+    const result = await this.db.prepare(`SELECT provider, api_key FROM provider_keys`).all();
+    const out: Record<string, string> = {};
+    for (const r of result.results ?? []) out[String(r.provider)] = String(r.api_key);
+    return out;
+  }
+
+  async setApiKey(provider: string, apiKey: string): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO provider_keys (provider, api_key, updated_at) VALUES (?, ?, ?)
+         ON CONFLICT(provider) DO UPDATE SET api_key = excluded.api_key, updated_at = excluded.updated_at`
+      )
+      .bind(provider, apiKey, new Date().toISOString())
+      .run();
+  }
+
+  async deleteApiKey(provider: string): Promise<void> {
+    await this.db.prepare(`DELETE FROM provider_keys WHERE provider = ?`).bind(provider).run();
   }
 
   async setAdminOffline(provider: string, modelName: string, offline: boolean): Promise<void> {
@@ -101,6 +127,40 @@ export class D1Store implements Store {
       model_name:
         r.model_name === null || r.model_name === undefined ? undefined : String(r.model_name),
       detail: String(r.detail ?? ''),
+    }));
+  }
+
+  async saveModelTest(row: ModelTestRow): Promise<void> {
+    await this.db
+      .prepare(
+        `INSERT INTO model_tests (provider, model_name, tested_at, result, latency_ms, detail)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(provider, model_name) DO UPDATE SET
+           tested_at = excluded.tested_at,
+           result = excluded.result,
+           latency_ms = excluded.latency_ms,
+           detail = excluded.detail`
+      )
+      .bind(
+        row.provider,
+        row.model_name,
+        row.tested_at,
+        row.result,
+        row.latency_ms,
+        row.detail
+      )
+      .run();
+  }
+
+  async getModelTests(): Promise<ModelTestRow[]> {
+    const result = await this.db.prepare(`SELECT * FROM model_tests`).all();
+    return (result.results ?? []).map((r) => ({
+      provider: String(r.provider),
+      model_name: String(r.model_name),
+      result: String(r.result) as ModelTestRow['result'],
+      latency_ms: Number(r.latency_ms ?? 0),
+      detail: String(r.detail ?? ''),
+      tested_at: String(r.tested_at),
     }));
   }
 

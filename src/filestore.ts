@@ -1,6 +1,6 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import type { FreeModel, RunSummary, AdminLog } from './types.js';
+import type { FreeModel, RunSummary, AdminLog, ModelTestRow } from './types.js';
 import type { Store } from './store.js';
 
 /** File-backed Store used by the standalone / GitHub Actions runner. */
@@ -9,8 +9,59 @@ export class FileStore implements Store {
   private loaded = false;
   private logs: AdminLog[] = [];
   private logsLoaded = false;
+  private keys: Record<string, string> = {};
+  private keysLoaded = false;
 
   constructor(private stateFile = 'state/models.json') {}
+
+  private keyFile(): string {
+    return this.stateFile.replace(/models\.json$/, 'keys.json');
+  }
+
+  private async loadKeys(): Promise<void> {
+    if (this.keysLoaded) return;
+    try {
+      const raw = await fs.readFile(this.keyFile(), 'utf8');
+      const parsed = JSON.parse(raw) as { keys?: Record<string, string> };
+      this.keys = parsed.keys ?? {};
+    } catch {
+      this.keys = {};
+    }
+    this.keysLoaded = true;
+  }
+
+  async getApiKeys(): Promise<Record<string, string>> {
+    await this.loadKeys();
+    return { ...this.keys };
+  }
+
+  async setApiKey(provider: string, apiKey: string): Promise<void> {
+    await this.loadKeys();
+    this.keys[provider] = apiKey;
+    await fs.mkdir(path.dirname(this.keyFile()), { recursive: true });
+    await fs.writeFile(
+      this.keyFile(),
+      JSON.stringify(
+        { updated_at: new Date().toISOString(), keys: this.keys },
+        null,
+        2
+      )
+    );
+  }
+
+  async deleteApiKey(provider: string): Promise<void> {
+    await this.loadKeys();
+    delete this.keys[provider];
+    await fs.mkdir(path.dirname(this.keyFile()), { recursive: true });
+    await fs.writeFile(
+      this.keyFile(),
+      JSON.stringify(
+        { updated_at: new Date().toISOString(), keys: this.keys },
+        null,
+        2
+      )
+    );
+  }
 
   private async load(): Promise<void> {
     if (this.loaded) return;
@@ -97,6 +148,36 @@ export class FileStore implements Store {
   async getLogs(limit = 200): Promise<AdminLog[]> {
     await this.loadLogs();
     return this.logs.slice(0, limit);
+  }
+
+  async saveModelTest(row: ModelTestRow): Promise<void> {
+    const file = this.stateFile.replace(/models\.json$/, 'model-tests.json');
+    let rows: ModelTestRow[] = [];
+    try {
+      const raw = await fs.readFile(file, 'utf8');
+      rows = (JSON.parse(raw) as { rows?: ModelTestRow[] }).rows ?? [];
+    } catch {
+      rows = [];
+    }
+    rows = rows.filter(
+      (r) => !(r.provider === row.provider && r.model_name === row.model_name)
+    );
+    rows.push(row);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(
+      file,
+      JSON.stringify({ updated_at: new Date().toISOString(), rows }, null, 2)
+    );
+  }
+
+  async getModelTests(): Promise<ModelTestRow[]> {
+    const file = this.stateFile.replace(/models\.json$/, 'model-tests.json');
+    try {
+      const raw = await fs.readFile(file, 'utf8');
+      return (JSON.parse(raw) as { rows?: ModelTestRow[] }).rows ?? [];
+    } catch {
+      return [];
+    }
   }
 
   async upsert(models: FreeModel[]): Promise<void> {

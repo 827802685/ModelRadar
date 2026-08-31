@@ -49,6 +49,9 @@ function hasChanged(old: FreeModel, next: FreeModel): boolean {
     'expire_days',
     'context_length',
     'base_url',
+    'capabilities',
+    'source_url',
+    'region',
     'categories',
   ];
   const same = (a: unknown, b: unknown) =>

@@ -57,3 +57,18 @@ test('category change counts as a change', () => {
   assert.deepEqual(diff.changed.map((x) => x.model_name), ['a']);
   assert.deepEqual(diff.added, []);
 });
+
+test('capabilities change counts as a change', () => {
+  const existing = [m('p', 'a', { capabilities: ['chat'] })];
+  const incoming = [m('p', 'a', { capabilities: ['chat', 'vision'] })];
+  const diff = diffModels(existing, incoming, ['p']);
+  assert.deepEqual(diff.changed.map((x) => x.model_name), ['a']);
+  assert.deepEqual(diff.removed, []);
+});
+
+test('region change counts as a change', () => {
+  const existing = [m('p', 'a', { region: 'us' })];
+  const incoming = [m('p', 'a', { region: 'cn' })];
+  const diff = diffModels(existing, incoming, ['p']);
+  assert.deepEqual(diff.changed.map((x) => x.model_name), ['a']);
+});

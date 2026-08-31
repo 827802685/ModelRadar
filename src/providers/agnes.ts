@@ -8,6 +8,31 @@ interface AgnesModel {
   supported_endpoint_types?: string[];
 }
 
+const SLEEP_MS = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// Agnes heavily rate-limits (and sometimes blocks) datacenter/Cloudflare IPs,
+// and returns 429. Retry transient throttling before giving up.
+async function fetchWithRetry(endpoint: string, init: RequestInit, retries = 2): Promise<Response> {
+  let last: Response | undefined;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const resp = await fetch(endpoint, init);
+    // Non-429 client errors are deterministic; 5xx during rollouts can retry.
+    if (resp.status !== 429 && resp.status < 500) return resp;
+    last = resp;
+    if (attempt < retries) await SLEEP_MS(800 * (attempt + 1));
+  }
+  if (!last) throw new Error('Agnes fetch failed');
+  return last;
+}
+
+function statusHint(status: number): string {
+  if (status === 429) {
+    return '（触发了速率限制，或 Agnes 拦截了数据中心/Cloudflare IP 请稍后再试/换网络环境）';
+  }
+  if (status >= 500) return '（服务端暂时不可用，请稍后再试）';
+  return '';
+}
+
 // agnes-2.5-pro / agnes-2.5-pro-alpha are paid; the rest are free indefinitely.
 function isFree(m: AgnesModel): boolean {
   return !/pro/i.test(m.id);
@@ -33,10 +58,11 @@ export class AgnesScraper {
       return [];
     }
 
-    const resp = await fetch(ENDPOINT, {
-      headers: { authorization: `Bearer ${apiKey}` },
-    });
-    if (!resp.ok) throw new Error(`Agnes AI models API ${resp.status}`);
+    const resp = await fetchWithRetry(
+      ENDPOINT,
+      { headers: { authorization: `Bearer ${apiKey}` } }
+    );
+    if (!resp.ok) throw new Error(`Agnes AI models API ${resp.status}${statusHint(resp.status)}`);
 
     const data = (await resp.json()) as { data?: AgnesModel[] };
     const now = new Date().toISOString();

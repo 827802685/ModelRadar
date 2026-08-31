@@ -49,6 +49,8 @@ export interface RunSummary {
   added_models?: string[];
   removed_models?: string[];
   changed_models?: string[];
+  /** Models kept out of the active pool because the test bench proved them unusable. */
+  test_filtered_out?: number;
 }
 
 export interface AdminLog {
@@ -58,4 +60,14 @@ export interface AdminLog {
   provider?: string;
   model_name?: string;
   detail?: string;
+}
+
+/** Latest test-bench probe result stored per model. */
+export interface ModelTestRow {
+  provider: string;
+  model_name: string;
+  result: 'ok' | 'auth' | 'unsupported' | 'rate_limit' | 'error' | 'skip';
+  latency_ms: number;
+  detail: string;
+  tested_at: string;
 }

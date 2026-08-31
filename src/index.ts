@@ -3,6 +3,8 @@ import { D1Store, type Store } from './store.js';
 import { toRelayCatalog } from './catalog.js';
 import { dashboardHtml, loginHtml } from './dashboard.js';
 import { toRssXml } from './rss.js';
+import { providerInfos, testProvider } from './provider-test.js';
+import { runBatchProbe, toRow, type BatchTestItem } from './batch-test.js';
 import type { WorkersAiLike } from './classify.js';
 import type { SyncOptions } from './run.js';
 import type { RunSummary } from './types.js';
@@ -26,6 +28,17 @@ export interface Env {
 const AUTH_COOKIE = 'mr_auth';
 const SESSION_DAYS = 7;
 const AUTH_ROUTES = new Set(['/', '/status']);
+
+// Provider name -> environment variable holding its API key.
+const ENV_KEY: Record<string, keyof Env> = {
+  openrouter: 'OPENROUTER_API_KEY',
+  zhipu: 'ZHIPU_API_KEY',
+  modelscope: 'MODELSCOPE_API_KEY',
+  google: 'GOOGLE_API_KEY',
+  nvidia: 'NVIDIA_API_KEY',
+  siliconflow: 'SILICONFLOW_API_KEY',
+  agnes: 'AGNES_API_KEY',
+};
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body, null, 2), {
@@ -221,9 +234,17 @@ export default {
     }
 
     if (url.pathname === '/rss.xml' && request.method === 'GET') {
-      const models = await new D1Store(env.DB).getExisting();
+      const store = new D1Store(env.DB);
+      const models = await store.getExisting();
+      // Only models proven usable by a key-probe meet the "free usable" bar.
+      const tests = await store.getModelTests();
+      const okKeys = new Set<string>();
+      for (const t of tests) {
+        if (t.result === 'ok') okKeys.add(`${t.provider}:${t.model_name}`);
+      }
+      const usable = models.filter((m) => okKeys.has(`${m.provider}:${m.model_name}`));
       const self = `https://${url.host}/`;
-      return new Response(toRssXml(models, self), {
+      return new Response(toRssXml(usable, self), {
         headers: { 'content-type': 'application/rss+xml; charset=utf-8' },
       });
     }
@@ -249,6 +270,84 @@ export default {
 
     if (url.pathname === '/models' && request.method === 'GET') {
       return json(await new D1Store(env.DB).getAll());
+    }
+
+    if (url.pathname === '/providers' && request.method === 'GET') {
+      return json(providerInfos());
+    }
+
+    if (url.pathname === '/config/keys') {
+      if (!(await isAuthed(request, env))) return json({ error: 'unauthorized' }, 401);
+      const store = new D1Store(env.DB);
+
+      if (request.method === 'GET') {
+        const stored = await store.getApiKeys();
+        const list = providerInfos().map((p) => {
+          const envKey = ENV_KEY[p.name];
+          const envVal = envKey ? env[envKey] : undefined;
+          const dbVal = stored[p.name];
+          const hasKey = Boolean(dbVal || envVal);
+          return {
+            name: p.name,
+            needsKey: p.needsKey,
+            has_key: hasKey,
+            source: dbVal ? 'db' : envVal ? 'env' : 'none',
+          };
+        });
+        return json(list);
+      }
+
+      if (request.method === 'POST') {
+        const body = (await request.json()) as { provider?: string; api_key?: string };
+        const name = (body.provider ?? '').trim().toLowerCase();
+        const key = (body.api_key ?? '').trim();
+        const known = providerInfos().some((p) => p.name === name);
+        if (!name || !known) return json({ error: 'invalid provider' }, 400);
+        if (!key) return json({ error: 'api_key required' }, 400);
+        await store.setApiKey(name, key);
+        await store.addLog({
+          ts: new Date().toISOString(),
+          action: 'set_key',
+          provider: name,
+          detail: `保存 ${name} 密钥`,
+        });
+        return json({ ok: true });
+      }
+
+      if (request.method === 'DELETE') {
+        const name = (url.searchParams.get('provider') ?? '').trim().toLowerCase();
+        if (!name) return json({ error: 'provider required' }, 400);
+        await store.deleteApiKey(name);
+        await store.addLog({
+          ts: new Date().toISOString(),
+          action: 'delete_key',
+          provider: name,
+          detail: `删除 ${name} 密钥`,
+        });
+        return json({ ok: true });
+      }
+
+      return json({ error: 'method not allowed' }, 405);
+    }
+
+    if (url.pathname === '/providers/test' && request.method === 'POST') {
+      if (!(await isAuthed(request, env))) return json({ error: 'unauthorized' }, 401);
+      const body = (await request.json()) as { provider?: string; api_key?: string };
+      if (!body.provider || !body.api_key) {
+        return json({ error: 'provider and api_key required' }, 400);
+      }
+      const result = await testProvider(body.provider, body.api_key);
+      try {
+        await new D1Store(env.DB).addLog({
+          ts: new Date().toISOString(),
+          action: 'provider_test',
+          provider: body.provider,
+          detail: `${result.ok ? '通过' : '失败'} - ${result.message}`,
+        });
+      } catch (err) {
+        console.error('[log] provider_test failed:', err);
+      }
+      return json(result);
     }
 
     if (url.pathname === '/models/offline' && request.method === 'POST') {
@@ -314,6 +413,139 @@ export default {
       const summary = await runSync(syncOptions(env));
       await logSyncRun(new D1Store(env.DB), 'sync', summary);
       return json(summary);
+    }
+
+    if (url.pathname === '/test/results' && request.method === 'GET') {
+      if (!(await isAuthed(request, env))) return json({ error: 'unauthorized' }, 401);
+      const rows = await new D1Store(env.DB).getModelTests();
+      const byKey: Record<string, unknown> = {};
+      for (const r of rows) byKey[`${r.provider}:${r.model_name}`] = r;
+      return json({ tests: byKey, updated_at: new Date().toISOString() });
+    }
+
+    if (url.pathname === '/test/run' && request.method === 'POST') {
+      if (!(await isAuthed(request, env))) return json({ error: 'unauthorized' }, 401);
+      const body = (await request.json()) as {
+        providers?: string[];
+        scope?: string;
+        concurrency?: number;
+        items?: { provider?: string; model_name?: string }[];
+      };
+      const store = new D1Store(env.DB);
+      const models = await store.getAll();
+
+      const openaiCompat = new Set(
+        providerInfos().filter((p) => p.openaiCompatible).map((p) => p.name)
+      );
+
+      // Keys: environment vars (low priority) then saved DB keys (high priority).
+      const keys: Record<string, string> = {};
+      for (const p of providerInfos()) {
+        const envKey = ENV_KEY[p.name];
+        if (envKey && env[envKey]) keys[p.name] = env[envKey] as string;
+      }
+      for (const [k, v] of Object.entries(await store.getApiKeys())) {
+        if (v) keys[k] = v;
+      }
+
+      const byKey = new Map(models.map((m) => [`${m.provider}:${m.model_name}`, m]));
+
+      const items: BatchTestItem[] = [];
+      const extraItems = body.items ?? [];
+      const explicit = Array.isArray(extraItems) && extraItems.length > 0;
+      if (explicit) {
+        for (const it of extraItems) {
+          if (!it.provider || !it.model_name) continue;
+          const m = byKey.get(`${it.provider}:${it.model_name}`);
+          const compatible = openaiCompat.has(it.provider);
+          items.push({
+            provider: it.provider,
+            model_name: it.model_name,
+            base_url: compatible ? (m?.base_url || '') : '',
+          });
+        }
+      } else {
+        const provs =
+          Array.isArray(body.providers) && body.providers.length
+            ? new Set(body.providers.map((s) => String(s)))
+            : null;
+        const scope =
+          body.scope === 'chat' ? 'chat' : body.scope === 'all' ? 'all' : 'active';
+        for (const m of models) {
+          if (provs && !provs.has(m.provider)) continue;
+          if (scope === 'active' && m.status !== 'active') continue;
+          if (scope === 'chat') {
+            const caps = (m.capabilities ?? []).map((c) => c.toLowerCase());
+            if (m.status !== 'active' || !caps.includes('chat') || caps.includes('embedding')) {
+              continue;
+            }
+          }
+          const compatible = openaiCompat.has(m.provider);
+          items.push({
+            provider: m.provider,
+            model_name: m.model_name,
+            base_url: compatible ? m.base_url || '' : '',
+          });
+        }
+      }
+
+      const encoder = new TextEncoder();
+      const stream = new TransformStream<Uint8Array>();
+      const writer = stream.writable.getWriter();
+      const send = (obj: unknown) =>
+        writer.write(encoder.encode('data: ' + JSON.stringify(obj) + '\n\n'));
+
+      let offlineCount = 0;
+      runBatchProbe(items, keys, (o) => {
+        const row = toRow(o);
+        try {
+          store.saveModelTest(row).catch((e) => console.error('[test] save:', e));
+        } catch (e) {
+          console.error('[test] result:', e);
+        }
+        // Immediate closed-loop: a chat probe proving "unsupported" takes the
+        // model out of the active pool right away (pure-embedding models spared).
+        if (o.kind === 'unsupported') {
+          const m = byKey.get(`${o.provider}:${o.model_name}`);
+          const caps = (m?.capabilities ?? []).map((c) => c.toLowerCase());
+          const pureEmbed = caps.includes('embedding') && !caps.includes('chat');
+          if (!pureEmbed && m) {
+            offlineCount++;
+            store.markRemoved([m]).catch((e) => console.error('[test] offline:', e));
+          }
+        }
+        send({
+          type: 'result',
+          provider: o.provider,
+          model_name: o.model_name,
+          kind: o.kind,
+          ok: o.ok,
+          latency_ms: o.latency_ms,
+          detail: o.detail,
+        });
+      }, body.concurrency ?? 6)
+        .then((sum) => {
+          send({
+            type: 'done',
+            ...sum,
+            offline: offlineCount > 0 ? offlineCount : undefined,
+          });
+          return writer.close();
+        })
+        .catch((err) => {
+          send({
+            type: 'error',
+            message: err instanceof Error ? err.message : String(err),
+          });
+          return writer.close();
+        });
+
+      return new Response(stream.readable, {
+        headers: {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache',
+        },
+      });
     }
 
     return new Response(
