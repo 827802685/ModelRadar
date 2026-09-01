@@ -453,15 +453,27 @@ export default {
       const items: BatchTestItem[] = [];
       const extraItems = body.items ?? [];
       const explicit = Array.isArray(extraItems) && extraItems.length > 0;
+      // Google's Gemini API is not OpenAI-compatible: probe it natively,
+      // OpenRouter wants standard attribution headers, everything else uses
+      // the OpenAI-style probe.
+      const isGemini = (provider: string) => provider === 'google';
+      const openRouterHeaders: Record<string, string> = {
+        'HTTP-Referer': 'https://modelradar.827802685.workers.dev',
+        'HTTP-X-Title': 'ModelRadar',
+      };
+
       if (explicit) {
         for (const it of extraItems) {
           if (!it.provider || !it.model_name) continue;
           const m = byKey.get(`${it.provider}:${it.model_name}`);
-          const compatible = openaiCompat.has(it.provider);
+          const probe = isGemini(it.provider) ? 'gemini' as const : 'openai' as const;
+          const hasUrl = openaiCompat.has(it.provider) || isGemini(it.provider);
           items.push({
             provider: it.provider,
             model_name: it.model_name,
-            base_url: compatible ? (m?.base_url || '') : '',
+            base_url: hasUrl ? (m?.base_url || '') : '',
+            probe,
+            headers: it.provider === 'openrouter' ? openRouterHeaders : undefined,
           });
         }
       } else {
@@ -480,11 +492,13 @@ export default {
               continue;
             }
           }
-          const compatible = openaiCompat.has(m.provider);
+          const hasUrl = openaiCompat.has(m.provider) || isGemini(m.provider);
           items.push({
             provider: m.provider,
             model_name: m.model_name,
-            base_url: compatible ? m.base_url || '' : '',
+            base_url: hasUrl ? m.base_url || '' : '',
+            probe: isGemini(m.provider) ? 'gemini' as const : 'openai' as const,
+            headers: m.provider === 'openrouter' ? openRouterHeaders : undefined,
           });
         }
       }

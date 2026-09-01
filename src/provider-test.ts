@@ -50,7 +50,8 @@ const SCRAPERS: Record<string, () => ProviderScraper> = {
 };
 
 // OpenAI-compatible chat base URLs (providers in this map get a live
-// /chat/completions probe; Google uses the Gemini API and is list-only).
+// /chat/completions probe; Google uses the Gemini API and is probed
+// separately via its native generateContent endpoint).
 const CHAT_BASE: Record<string, string> = {
   openrouter: 'https://openrouter.ai/api/v1',
   zhipu: 'https://open.bigmodel.cn/api/paas/v4',
@@ -72,6 +73,7 @@ const PROBE_MODELS: Record<string, string[]> = {
   openrouter: ['meta-llama/llama-3.1-8b-instruct:free'],
   zhipu: ['glm-4-flash'],
   modelscope: ['Qwen/Qwen2.5-7B-Instruct'],
+  google: ['gemini-2.5-flash', 'gemini-2.0-flash'],
   nvidia: [
     'google/gemma-4-31b-it',
     'openai/gpt-oss-20b',
@@ -182,6 +184,46 @@ function latencyOf(startedAt: number): number {
   return Date.now() - startedAt;
 }
 
+/** Google-only: probe via the native Gemini generateContent endpoint. */
+async function probeGemini(apiKey: string, model: string): Promise<ProbeResult> {
+  const startedAt = Date.now();
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), PROBE_TIMEOUT_MS);
+  try {
+    const url = new URL(`https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent`);
+    url.searchParams.set('key', apiKey);
+    const resp = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      signal: controller.signal,
+      body: JSON.stringify({
+        contents: [{ role: 'user', parts: [{ text: 'ping' }] }],
+        generationConfig: { maxOutputTokens: 1 },
+      }),
+    });
+    const latency = Date.now() - startedAt;
+    if (resp.ok) {
+      return { kind: 'ok', ok: true, message: `Gemini 探测成功(${latency}ms)`, latency_ms: latency };
+    }
+    const status = resp.status;
+    if (status === 401 || status === 403 || status === 400
+        || /(API_KEY_INVALID|PERMISSION_DENIED|API key not valid)/i.test(await resp.clone().text())) {
+      return { kind: 'auth', ok: false, message: `Key 无效或鉴权失败(HTTP ${status})`, latency_ms: latency, error: `HTTP ${status}` };
+    }
+    if (status === 429) {
+      return { kind: 'other', ok: false, message: `限流(HTTP 429)`, latency_ms: latency, error: `HTTP 429` };
+    }
+    return { kind: 'other', ok: false, message: `探测被拒(HTTP ${status})`, latency_ms: latency, error: `HTTP ${status}` };
+  } catch (err) {
+    const latency = Date.now() - startedAt;
+    const aborted = err instanceof Error && err.name === 'AbortError';
+    const detail = aborted ? '请求超时' : `请求异常: ${err instanceof Error ? err.message : String(err)}`;
+    return { kind: 'other', ok: false, message: detail, latency_ms: latency, error: aborted ? 'timeout' : String(err) };
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 /**
  * Validate a provider's API key and connectivity. Never stores the key.
  *
@@ -233,7 +275,49 @@ export async function testProvider(provider: string, apiKey: string): Promise<Pr
 
   const listLatency = latencyOf(startedAt);
 
-  // Stage 2: live chat probe for OpenAI-compatible providers.
+  // Stage 2: live chat probe. Google uses the native Gemini generateContent
+  // endpoint; every other provider is OpenAI-compatible /chat/completions.
+  if (name === 'google') {
+    const gCandidates = chatCandidates('google', models);
+    let lastOther: ProbeResult | null = null;
+    for (const model of gCandidates) {
+      const probe = await probeGemini(key, model);
+      if (probe.kind === 'ok') {
+        return {
+          provider,
+          ok: true,
+          message: `连接正常，抓取到 ${models.length} 个 Gemini 模型；${probe.message}`,
+          model_count: models.length,
+          tested_model: model,
+          latency_ms: latencyOf(startedAt),
+        };
+      }
+      if (probe.kind === 'auth') {
+        return {
+          provider,
+          ok: false,
+          message: `抓取到 ${models.length} 个 Gemini 模型，但 Key 无效或鉴权失败(HTTP 401/403)`,
+          model_count: models.length,
+          tested_model: model,
+          latency_ms: latencyOf(startedAt),
+          error: probe.error,
+        };
+      }
+      lastOther = probe;
+    }
+    if (lastOther) {
+      return {
+        provider,
+        ok: true,
+        message: `连接与 Key 鉴权正常，抓取到 ${models.length} 个 Gemini 模型；chat 探测被拒（多为免费配额或限流）：${lastOther.message}`,
+        model_count: models.length,
+        tested_model: gCandidates[0],
+        latency_ms: latencyOf(startedAt),
+        error: lastOther.error,
+      };
+    }
+  }
+
   const baseUrl = CHAT_BASE[name];
   const candidates = chatCandidates(name, models);
   if (baseUrl && candidates.length > 0) {
