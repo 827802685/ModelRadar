@@ -70,4 +70,6 @@ export interface ModelTestRow {
   latency_ms: number;
   detail: string;
   tested_at: string;
+  /** Monotonic: 1 once a probe has ever returned ok (immune to later rate-limit/error). */
+  ever_ok?: number;
 }

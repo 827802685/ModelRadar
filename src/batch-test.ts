@@ -35,7 +35,9 @@ export interface ProbeOutcome {
   detail: string;
 }
 
-const PROBE_TIMEOUT_MS = 20_000;
+// 30s: free-tier endpoints (OpenRouter / Zhipu Flash) often queue for 15-20s
+// before answering, so a short timeout would flag working models as errors.
+const PROBE_TIMEOUT_MS = 30_000;
 
 function classifyStatus(status: number, bodySample: string): Pick<ProbeOutcome, 'kind' | 'ok' | 'detail'> {
   const sample = bodySample.slice(0, 160);

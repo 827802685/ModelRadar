@@ -159,10 +159,13 @@ export class FileStore implements Store {
     } catch {
       rows = [];
     }
+    const prev = rows.find((r) => r.provider === row.provider && r.model_name === row.model_name);
     rows = rows.filter(
       (r) => !(r.provider === row.provider && r.model_name === row.model_name)
     );
-    rows.push(row);
+    // Preserve the monotonic "ever ok" flag for the local (non-D1) store too.
+    const ever = prev?.ever_ok === 1 || row.result === 'ok' ? 1 : 0;
+    rows.push({ ...row, ever_ok: ever });
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(
       file,

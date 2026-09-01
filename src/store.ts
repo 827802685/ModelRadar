@@ -131,15 +131,18 @@ export class D1Store implements Store {
   }
 
   async saveModelTest(row: ModelTestRow): Promise<void> {
+    // ever_ok: once it was ok, keep 1 even if later probes get rate-limit or error.
+    // This protects free-tier models from being dropped when a concurrent run overflows.
     await this.db
       .prepare(
-        `INSERT INTO model_tests (provider, model_name, tested_at, result, latency_ms, detail)
-         VALUES (?, ?, ?, ?, ?, ?)
+        `INSERT INTO model_tests (provider, model_name, tested_at, result, latency_ms, detail, ever_ok)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(provider, model_name) DO UPDATE SET
            tested_at = excluded.tested_at,
            result = excluded.result,
            latency_ms = excluded.latency_ms,
-           detail = excluded.detail`
+           detail = excluded.detail,
+           ever_ok = MAX(ever_ok, excluded.ever_ok)`
       )
       .bind(
         row.provider,
@@ -147,7 +150,8 @@ export class D1Store implements Store {
         row.tested_at,
         row.result,
         row.latency_ms,
-        row.detail
+        row.detail,
+        row.result === 'ok' ? 1 : 0
       )
       .run();
   }
@@ -161,6 +165,7 @@ export class D1Store implements Store {
       latency_ms: Number(r.latency_ms ?? 0),
       detail: String(r.detail ?? ''),
       tested_at: String(r.tested_at),
+      ever_ok: Number(r.ever_ok ?? 0),
     }));
   }
 

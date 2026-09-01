@@ -240,7 +240,9 @@ export default {
       const tests = await store.getModelTests();
       const okKeys = new Set<string>();
       for (const t of tests) {
-        if (t.result === 'ok') okKeys.add(`${t.provider}:${t.model_name}`);
+        // Include a model if it currently tests ok OR has ever tested ok
+        // (ever_ok guards free-tier models against transient rate-limit/timeout).
+        if (t.result === 'ok' || t.ever_ok === 1) okKeys.add(`${t.provider}:${t.model_name}`);
       }
       const usable = models.filter((m) => okKeys.has(`${m.provider}:${m.model_name}`));
       const self = `https://${url.host}/`;
